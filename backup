@@ -1,0 +1,252 @@
+import pandas as pd
+import numpy as np
+
+class Node:
+    def __init__(self, label=None, attribute=None):
+        self.label = label  # The class label (1 or 0)
+        self.attribute = attribute  # The attribute to split on
+        self.children = {}  # Dictionary to store child nodes
+
+def entropy(data):
+    # Calculate the entropy of a dataset
+    if len(data) == 0:
+        return 0
+    p = data.mean()
+    if p == 0 or p == 1:
+        return 0
+    return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
+
+def information_gain(data, attribute_name, target_name):
+    # Calculate the information gain of an attribute
+    entropy_before = entropy(data[target_name])
+    values = data[attribute_name].unique()
+    entropy_after = 0
+    for value in values:
+        subset = data[data[attribute_name] == value]
+        entropy_after += len(subset) / len(data) * entropy(subset[target_name])
+    return entropy_before - entropy_after
+
+def id3(data, target_name, attribute_names):
+    # Base cases
+    if len(data) == 0:
+        return Node()
+    if len(data[target_name].unique()) == 1:
+        return Node(data[target_name].iloc[0])
+    if len(attribute_names) == 0:
+        return Node(data[target_name].mode().iloc[0])
+
+    # Select the best attribute to split on
+    information_gains = {attr: information_gain(data, attr, target_name) for attr in attribute_names}
+    best_attribute = max(information_gains, key=information_gains.get)
+
+    # Create a new decision tree node
+    tree = Node()
+    tree.attribute = best_attribute
+
+    # Recursively build the tree for each value of the best attribute
+    for value in data[best_attribute].unique():
+        subset = data[data[best_attribute] == value]
+        subtree = id3(subset, target_name, [attr for attr in attribute_names if attr != best_attribute])
+        tree.children[value] = subtree
+
+    return tree
+
+# Load the dataset from a CSV file
+dataset = pd.read_csv("lol.csv")
+
+# Remove the "gameId" column
+dataset = dataset.drop("gameId", axis=1)
+
+# Define the target variable and attribute names
+target_variable = "blueWins"
+attribute_names = dataset.columns.drop(target_variable)
+
+from sklearn.model_selection import train_test_split
+
+# Split the dataset into training and testing sets (e.g., 80% training, 20% testing)
+train_data, test_and_validation_data = train_test_split(dataset, test_size=0.2, random_state=42)
+validation_data, test_data = train_test_split(test_and_validation_data, test_size=0.5, random_state=42)
+
+# Build the ID3 decision tree
+decision_tree = id3(train_data, target_variable, attribute_names)
+
+def id3_with_max_depth(data, target_name, attribute_names, max_depth=None, current_depth=0):
+    # Base cases
+    if len(data) == 0:
+        return Node()
+    if len(data[target_name].unique()) == 1:
+        return Node(data[target_name].iloc[0])
+    if len(attribute_names) == 0 or (max_depth is not None and current_depth >= max_depth):
+        return Node(data[target_name].mode().iloc[0])
+
+    # Select the best attribute to split on
+    information_gains = {attr: information_gain(data, attr, target_name) for attr in attribute_names}
+    best_attribute = max(information_gains, key=information_gains.get)
+
+    # Create a new decision tree node
+    tree = Node()
+    tree.attribute = best_attribute
+
+    # Recursively build the tree for each value of the best attribute
+    for value in data[best_attribute].unique():
+        subset = data[data[best_attribute] == value]
+        subtree = id3_with_max_depth(subset, target_name, [attr for attr in attribute_names if attr != best_attribute], max_depth, current_depth + 1)
+        tree.children[value] = subtree
+
+    return tree
+
+max_depth = 4  # Set your desired maximum depth
+max_depth_tree = id3_with_max_depth(train_data, target_variable, attribute_names, max_depth)
+
+def prune_tree(tree, validation_data, target_variable):
+    # Base case: If the tree is a leaf node, return the tree
+    if tree.label is not None:
+        return tree
+
+    # Recursively prune the subtrees
+    for value in tree.children:
+        subtree = tree.children[value]
+        tree.children[value] = prune_tree(subtree, validation_data, target_variable)
+
+    # Calculate the accuracy of the unpruned tree on the validation data
+    original_accuracy = accuracy_score(predict_labels(tree, validation_data), validation_data[target_variable])
+
+    # Temporarily prune the current subtree by turning it into a leaf node
+    original_children = tree.children
+    tree.children = {}
+    tree.label = validation_data[target_variable].mode().iloc[0]
+
+    # Calculate the accuracy of the pruned tree on the validation data
+    pruned_accuracy = accuracy_score(predict_labels(tree, validation_data), validation_data[target_variable])
+
+    # If pruning doesn't decrease accuracy, keep the tree pruned; otherwise, revert to the original
+    if pruned_accuracy >= original_accuracy:
+        return tree
+    else:
+        tree.children = original_children
+        tree.label = None
+        return tree
+
+# Now you can use the decision tree to make predictions
+# For example, you can traverse the tree to predict a new data point
+def predict(tree, data_point):
+    if tree.label is not None:
+        return tree.label
+
+    attribute_value = data_point.get(tree.attribute)
+    if attribute_value is None:
+        # Return an error message as a string
+        return "Error: Attribute '{}' not found in the data_point".format(tree.attribute)
+
+    if attribute_value not in tree.children:
+        return dataset[target_variable].mode().iloc[0]
+
+    return predict(tree.children[attribute_value], data_point)
+
+# Example prediction for a new data point (replace with actual data)
+new_data_point = {"blueWardsPlaced": 2, "blueWardsDestroyed": 1, "blueFirstBlood": 1, "blueGoldDiff": 2000}
+prediction = predict(decision_tree, new_data_point)
+print("Predicted blueWins:", prediction)
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+
+# Predict the target values on the test data
+def predict_labels(tree, test_data):
+    predicted_labels = [predict(tree, data_point) for _, data_point in test_data.iterrows()]
+    return predicted_labels
+
+predicted_labels = predict_labels(decision_tree, test_data)
+
+# Get the true labels from the test data
+true_labels = test_data[target_variable]
+
+# Calculate accuracy
+accuracy = accuracy_score(true_labels, predicted_labels)
+print("Accuracy:", accuracy)
+
+# Calculate precision
+precision = precision_score(true_labels, predicted_labels)
+print("Precision:", precision)
+
+# Calculate recall
+recall = recall_score(true_labels, predicted_labels)
+print("Recall:", recall)
+
+# Calculate F1 score
+f1 = f1_score(true_labels, predicted_labels)
+print("F1 Score:", f1)
+
+# Create a confusion matrix
+confusion = confusion_matrix(true_labels, predicted_labels)
+print("Confusion Matrix:")
+print(confusion)
+
+#create pruned tree
+
+pruned_tree = prune_tree(decision_tree, validation_data, target_variable)
+
+# Example prediction for a new data point using the pruned tree (replace with actual data)
+new_data_point = {"blueWardsPlaced": 2, "blueWardsDestroyed": 1, "blueFirstBlood": 1, "blueGoldDiff": 2000}
+prediction = predict(pruned_tree, new_data_point)
+print("Predicted blueWins with pruned tree:", prediction)
+
+# Example of evaluating the pruned tree
+pruned_predicted_labels = predict_labels(pruned_tree, test_data)
+pruned_accuracy = accuracy_score(true_labels, pruned_predicted_labels)
+print("Accuracy with pruned tree:", pruned_accuracy)
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+
+# Predict the target values on the test data using the pruned tree
+pruned_predicted_labels = predict_labels(pruned_tree, test_data)
+
+# Get the true labels from the test data
+true_labels = test_data[target_variable]
+
+# Calculate accuracy with the pruned tree
+accuracy = accuracy_score(true_labels, pruned_predicted_labels)
+print("Accuracy with pruned tree:", accuracy)
+
+# Calculate precision with the pruned tree
+precision = precision_score(true_labels, pruned_predicted_labels)
+print("Precision with pruned tree:", precision)
+
+# Calculate recall with the pruned tree
+recall = recall_score(true_labels, pruned_predicted_labels)
+print("Recall with pruned tree:", recall)
+
+# Calculate F1 score with the pruned tree
+f1 = f1_score(true_labels, pruned_predicted_labels)
+print("F1 Score with pruned tree:", f1)
+
+# Create a confusion matrix with the pruned tree
+confusion = confusion_matrix(true_labels, pruned_predicted_labels)
+print("Confusion Matrix with pruned tree:")
+print(confusion)
+
+# Predict the target values on the test data using the max_depth_tree (unpruned tree)
+max_depth_predicted_labels = predict_labels(max_depth_tree, test_data)
+
+# Get the true labels from the test data
+true_labels = test_data[target_variable]
+
+# Calculate accuracy with the max_depth_tree (unpruned tree)
+accuracy = accuracy_score(true_labels, max_depth_predicted_labels)
+print("Accuracy with max_depth_tree (unpruned tree):", accuracy)
+
+# Calculate precision with the max_depth_tree (unpruned tree)
+precision = precision_score(true_labels, max_depth_predicted_labels)
+print("Precision with max_depth_tree (unpruned tree):", precision)
+
+# Calculate recall with the max_depth_tree (unpruned tree)
+recall = recall_score(true_labels, max_depth_predicted_labels)
+print("Recall with max_depth_tree (unpruned tree):", recall)
+
+# Calculate F1 score with the max_depth_tree (unpruned tree)
+f1 = f1_score(true_labels, max_depth_predicted_labels)
+print("F1 Score with max_depth_tree (unpruned tree):", f1)
+
+# Create a confusion matrix with the max_depth_tree (unpruned tree)
+confusion = confusion_matrix(true_labels, max_depth_predicted_labels)
+print("Confusion Matrix with max_depth_tree (unpruned tree):")
+print(confusion)
